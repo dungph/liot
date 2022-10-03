@@ -1,0 +1,60 @@
+[package]
+name = "liot-esp32"
+version = "0.0.0"
+authors = ["Phạm Văn Dũng <dung18j@gmail.com>"]
+edition = "2021"
+resolver = "2"
+
+[profile.release]
+opt-level = "s"
+
+[profile.dev]
+debug = true # Symbols are nice and they don't increase the size on Flash
+opt-level = "z"
+
+[features]
+motion_light = []
+dht_sensor = []
+motion = []
+light_sensor = []
+button = []
+light = []
+lock = []
+fan = []
+
+[dependencies]
+esp-idf-sys = { version = "0.31.9", features = ["binstart"] }
+esp-idf-svc = { version = "0.42.5", features = ["experimental"]}
+embedded-svc = {version = "0.22.1" }
+esp-idf-hal = {  version = "0.38.1" }
+#embedded-hal = "0.2.7"
+embedded-hal = "1.0.0-alpha.8"
+embedded-hal_02 = { package = "embedded-hal", version = "0.2.7", features = ["unproven"] }
+heapless = "0.7.15"
+async-executor = "1.4.1"
+futures-lite = "1.12.0"
+futures-micro = "0.5.0"
+async-channel = "1.6.1"
+anyhow = "1"
+once_cell = { version = "1.14.0", default-features = false }
+serde_json = { version = "1.0.85", default-features = false, features = ["alloc"] }
+postcard = { version = "1.0.2", default-features = false, features = ["alloc"] }
+serde = { version = "1.0.144", default-features = false, features = ["derive", "alloc"] }
+snow = { version = "0.9.0" }
+rand = "0.8.5"
+async-trait = "0.1.57"
+x25519-dalek = { version = "1.2.0", default-features = false, features = ["u32_backend"] }
+event-listener = "2.5.3"
+base64 = "0.13.0"
+dashmap = "5.4.0"
+spin_on = "0.1.1"
+base58 = "0.2.0"
+mfrc522 = "0.3.0"
+hex = "0.4.3"
+lcd_1602_i2c = "0.3.0"
+lcd-lcm1602-i2c = "0.1.0"
+dht11 = "0.3.1"
+
+[build-dependencies]
+embuild = "0.30.3"
+anyhow = "1"
