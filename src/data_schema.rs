@@ -66,7 +66,6 @@ pub enum DetailDataSchema {
     #[serde(rename = "object")]
     Object {
         properties: BTreeMap<String, DataSchema>,
-        required: Vec<String>,
     },
 
     #[serde(rename = "array")]
@@ -78,5 +77,5 @@ pub enum DetailDataSchema {
 }
 
 pub trait Schema {
-    fn get_schema(&self) -> BTreeMap<String, DataSchema>;
+    fn get_schema(&self) -> DataSchema;
 }

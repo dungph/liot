@@ -1,5 +1,5 @@
 use crate::data_schema::Schema;
-use crate::data_schema::{DataSchema, ThingSchema};
+use crate::data_schema::ThingSchema;
 use crate::espnow::{self, EspNowService};
 use crate::storage::{StorageEntry, StorageService};
 use crate::wifi::WifiService;
@@ -21,7 +21,7 @@ pub trait Connection {
 pub struct Controller<'a> {
     id: String,
     wifi: WifiService<'a>,
-    device: Box<dyn Schema>,
+    devices: Vec<Box<dyn Schema>>,
     espnow: EspNowService,
     title: StorageEntry,
     //external_data: RefCell<BTreeMap<String, Value>>,
@@ -32,13 +32,13 @@ impl<'a> Controller<'a> {
         name: &str,
         wifi: WifiService<'a>,
         storage: &StorageService,
-        device: impl Schema + 'static,
+        device: Vec<Box<dyn Schema>>,
         espnow: EspNowService,
     ) -> Self {
         Self {
             id: name.to_string(),
             wifi,
-            device: Box::new(device),
+            devices: device,
             espnow,
             title: storage.entry("thing_title"),
             //external_data: RefCell::new(BTreeMap::new()),
@@ -47,21 +47,30 @@ impl<'a> Controller<'a> {
 
     pub fn get_schema(&self) -> ThingSchema {
         let mut properties = BTreeMap::new();
-        let mut setting_properties = BTreeMap::new();
-        setting_properties.extend(self.wifi.get_schema());
-        properties.insert(
-            String::from("setting"),
-            DataSchema {
-                id: self.id.clone(),
-                title: Some(String::from("Setting")),
-                detail: crate::data_schema::DetailDataSchema::Object {
-                    properties: setting_properties,
-                    required: vec![],
-                },
-                ..Default::default()
-            },
-        );
-        properties.extend(self.device.get_schema());
+        for device in &self.devices {
+            let device_schema = device.get_schema();
+            properties.insert(device_schema.id.clone(), device_schema);
+        }
+        let wifi_schema = self.wifi.get_schema();
+        properties.insert(wifi_schema.id.clone(), wifi_schema);
+        //let mut setting_properties = BTreeMap::new();
+
+        //setting_properties.extend(self.wifi.get_schema());
+        //properties.insert(
+        //    String::from("setting"),
+        //    DataSchema {
+        //        id: self.id.clone(),
+        //        title: Some(String::from("Setting")),
+        //        detail: crate::data_schema::DetailDataSchema::Object {
+        //            properties: setting_properties,
+        //        },
+        //        ..Default::default()
+        //    },
+        //);
+
+        //for device in &self.devices {
+        //    properties.extend(device.get_schema());
+        //}
 
         ThingSchema {
             id: espnow::get_mac().to_base58(),

@@ -10,17 +10,22 @@ use esp_idf_hal::{
     units::Hertz,
 };
 use futures_lite::future::or;
+use serde_json::{Number, Value};
+use std::time::Duration;
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 
 #[derive(Clone)]
 pub struct PWMDevice<'a> {
     dev: Rc<RefCell<esp_idf_hal::ledc::LedcDriver<'a>>>,
-    store_val: Rc<RefCell<u32>>,
     min: u32,
     max: u32,
-    title: StorageEntry,
+    module_title: StorageEntry,
+    state_title: StorageEntry,
+    duty_title: StorageEntry,
+    soft_control: StorageEntry,
     duty: StorageEntry,
     state: StorageEntry,
+    name: String,
 }
 
 impl<'a> PWMDevice<'a> {
@@ -32,31 +37,82 @@ impl<'a> PWMDevice<'a> {
         storage: StorageService,
     ) -> Self {
         let timer_config = TimerConfig::new()
-            .frequency(Hertz(5000))
+            .frequency(Hertz(2000))
             .resolution(Resolution::Bits10);
         let timer = LedcTimerDriver::new(timer, &timer_config).unwrap();
         let channel = LedcDriver::new(channel, timer, pin, &timer_config).unwrap();
         let max = channel.get_max_duty();
 
-        Self {
+        let ret = Self {
             min: 0,
             max,
-            store_val: Rc::new(RefCell::new(channel.get_duty())),
             dev: Rc::new(RefCell::new(channel)),
-            title: storage.entry(&format!("{name}_title")),
+            module_title: storage.entry(&format!("{name}_module_title")),
+            state_title: storage.entry(&format!("{name}_state_title")),
+            duty_title: storage.entry(&format!("{name}_duty_title")),
+            soft_control: storage.entry(&format!("{name}_soft_control")),
             duty: storage.entry(&format!("{name}_duty")),
             state: storage.entry(&format!("{name}_state")),
-        }
+            name: name.to_string(),
+        };
+        let val = ret
+            .duty
+            .get_or_init(|| serde_json::Value::Number(Number::from(0)));
+        ret.state.set(serde_json::Value::Bool(val == 0));
+
+        ret.dev
+            .borrow_mut()
+            .set_duty(val.as_u64().unwrap() as u32)
+            .ok();
+        ret
     }
     pub async fn run_handle(&self) {
         let future1 = async {
             loop {
                 if let Some(new) = self.duty.wait_new().await.as_u64() {
-                    if new >= self.min.into() && new <= self.max.into() {
-                        if new != self.min as u64 {
-                            *self.store_val.borrow_mut() = self.dev.borrow().get_duty();
+                    let new = new as u32;
+                    let current = self.dev.borrow().get_duty();
+                    if new >= self.min && new <= self.max {
+                        if let Some(true) = self
+                            .soft_control
+                            .get_or_init(|| Value::Bool(true))
+                            .as_bool()
+                        {
+                            let mut duties: Vec<u32> = if new >= current {
+                                (current..new).collect()
+                            } else {
+                                (new..current).rev().collect()
+                            };
+
+                            let step = duties.len() / 20;
+                            if step == 0 {
+                            } else {
+                                duties.retain(|v| *v as usize % step == 0);
+                            }
+                            for i in duties {
+                                futures_timer::Delay::new(Duration::from_millis(10)).await;
+                                self.dev.borrow_mut().set_duty(i).ok();
+                            }
+                            //if new >= current {
+                            //    if new - current > 20 {
+                            //        for i in current..new {
+                            //            futures_timer::Delay::new(Duration::from_millis(10)).await;
+                            //            self.dev.borrow_mut().set_duty(i).ok();
+                            //        }
+                            //    } else {
+                            //    }
+                            //    for i in current..new {
+                            //        futures_timer::Delay::new(Duration::from_millis(1)).await;
+                            //        self.dev.borrow_mut().set_duty(i).ok();
+                            //    }
+                            //} else {
+                            //    for i in (new..current).rev() {
+                            //        futures_timer::Delay::new(Duration::from_millis(1)).await;
+                            //        self.dev.borrow_mut().set_duty(i).ok();
+                            //    }
+                            //}
                         }
-                        self.dev.borrow_mut().set_duty(new as u32).ok();
+                        self.dev.borrow_mut().set_duty(new).ok();
                     }
                 }
             }
@@ -65,40 +121,96 @@ impl<'a> PWMDevice<'a> {
             loop {
                 if let Some(new) = self.state.wait_new().await.as_bool() {
                     if new {
-                        let current = *self.store_val.borrow();
-                        if current == 0 {
-                            self.dev.borrow_mut().set_duty(self.max).unwrap();
-                        } else {
-                            self.dev.borrow_mut().set_duty(current).unwrap();
-                        }
+                        self.duty.set(Value::Number(self.max.into()));
                     } else {
-                        self.dev.borrow_mut().set_duty(0).unwrap();
+                        self.duty.set(Value::Number(self.min.into()));
                     }
                 }
             }
         };
-
         or(future1, future2).await
     }
 }
 
 impl<'a> Schema for PWMDevice<'a> {
-    fn get_schema(&self) -> BTreeMap<String, DataSchema> {
+    fn get_schema(&self) -> DataSchema {
+        let name = &self.name;
         let onoff_field = DataSchema {
             id: self.state.get_key().to_string(),
-            title: Some(String::from("Trạng thái")),
-            detail: DetailDataSchema::String,
+            title: self
+                .state_title
+                .get_or_init(|| Value::String(format!("{name} state")))
+                .as_str()
+                .map(String::from),
+            detail: DetailDataSchema::Bool,
+            description: self.state.get().as_bool().map(|b| b.to_string()),
             ..Default::default()
         };
         let level_field = DataSchema {
             id: self.duty.get_key().to_string(),
-            title: Some(String::from("Trạng thái")),
+            title: self
+                .duty_title
+                .get_or_init(|| Value::String(format!("{name} duty")))
+                .as_str()
+                .map(String::from),
+            detail: DetailDataSchema::Integer {
+                minimum: Option::Some(self.min.into()),
+                maximum: Option::Some(self.max.into()),
+            },
+            description: self.duty.get().as_i64().map(|v| v.to_string()),
+            ..Default::default()
+        };
+        let module_title_field = DataSchema {
+            id: self.module_title.get_key().to_string(),
+            title: Some(format!("{name} title")),
             detail: DetailDataSchema::String,
             ..Default::default()
         };
+        let state_title_field = DataSchema {
+            id: self.state_title.get_key().to_string(),
+            title: Some(format!("{name} state title")),
+            detail: DetailDataSchema::String,
+            ..Default::default()
+        };
+        let duty_title_field = DataSchema {
+            id: self.duty_title.get_key().to_string(),
+            title: Some(format!("{name} duty title")),
+            detail: DetailDataSchema::String,
+            ..Default::default()
+        };
+        let soft_control = DataSchema {
+            id: self.soft_control.get_key().to_string(),
+            title: Some(format!("{name} soft control")),
+            detail: DetailDataSchema::Bool,
+            ..Default::default()
+        };
+        let mut settings = BTreeMap::new();
+        settings.insert(state_title_field.id.to_string(), state_title_field);
+        settings.insert(duty_title_field.id.to_owned(), duty_title_field);
+        settings.insert(module_title_field.id.to_owned(), module_title_field);
+        settings.insert(soft_control.id.to_owned(), soft_control);
+        let settings_schema = DataSchema {
+            id: String::from("setting"),
+            title: Some(String::from("Setting")),
+            detail: DetailDataSchema::Object {
+                properties: settings,
+            },
+            ..Default::default()
+        };
+
         let mut properties = BTreeMap::new();
         properties.insert(onoff_field.id.to_owned(), onoff_field);
         properties.insert(level_field.id.to_owned(), level_field);
-        properties
+        properties.insert(String::from("setting"), settings_schema);
+        DataSchema {
+            id: self.name.clone(),
+            title: self
+                .module_title
+                .get_or_init(|| Value::String(self.name.clone()))
+                .as_str()
+                .map(String::from),
+            detail: DetailDataSchema::Object { properties },
+            ..Default::default()
+        }
     }
 }

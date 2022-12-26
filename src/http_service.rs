@@ -58,7 +58,7 @@ impl HttpServe {
             }
         };
 
-        match dbg!(req.method().clone(), req.uri().path()) {
+        match (req.method().clone(), req.uri().path()) {
             (Method::GET, "/") => {
                 let res = Response::new(include_str!("index.html"));
                 write_respond(stream, res).await?;
@@ -104,39 +104,10 @@ impl HttpServe {
                     start
                 };
                 let val: BTreeMap<String, Value> = serde_json::from_slice(&buf[..len])?;
-                val.into_iter().for_each(|(k, v)| storage.set(&k, v));
+                val.into_iter().for_each(|(k, v)| storage.set_check(&k, v));
                 let res = Response::new(b"");
                 write_respond(stream, res).await?;
             }
-            //(Method::GET, "/dsdata") => {
-            //    let value = loop {
-            //        if let Some(value) = value.try_lock() {
-            //            break value;
-            //        } else {
-            //            std::thread::sleep(Duration::from_millis(500));
-            //        }
-            //    };
-            //    let body = serde_json::to_vec(&*value)?;
-            //    let mut res = Response::new(body);
-            //    res.headers_mut()
-            //        .append("Content-Type", HeaderValue::from_str("application/json")?);
-            //    write_respond(stream, res)?;
-            //}
-            //(Method::POST, "/data") => {
-            //    let len = if let Some(value) = req.headers().get("Content-Length") {
-            //        let len = value.to_str()?.parse()?;
-            //        if len > start {
-            //            stream.read_exact(&mut buf[start..][..len - start])?;
-            //        }
-            //        len
-            //    } else {
-            //        start
-            //    };
-            //    let val: Value = serde_json::from_slice(&buf[..len])?;
-            //    sender.send_blocking(val)?;
-            //    let res = Response::new(b"");
-            //    write_respond(stream, res)?;
-            //}
             _ => (),
         }
 

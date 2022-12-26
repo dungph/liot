@@ -1,18 +1,11 @@
 use anyhow::Result;
 use async_channel::{bounded, Receiver, Sender};
 use async_mutex::Mutex;
-use base58::ToBase58;
-use dashmap::{mapref::entry::Entry, DashMap};
+use dashmap::DashMap;
 use esp_idf_svc::espnow::{EspNow, BROADCAST};
 use esp_idf_sys::esp_wifi_get_mac;
-use postcard::to_allocvec;
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
-
-use std::{
-    borrow::Borrow,
-    rc::Rc,
-    sync::atomic::{AtomicBool, Ordering::Relaxed},
-};
+use serde::{de::DeserializeOwned, Serialize};
+use std::{borrow::Borrow, rc::Rc};
 
 use crate::{controller::Connection, wifi::WifiService};
 
@@ -61,7 +54,7 @@ impl EspNowService {
     }
     pub async fn reactor_tick(&self) {
         static RUN_LOCK: Mutex<()> = Mutex::new(());
-        if let Some(_) = RUN_LOCK.try_lock() {
+        if RUN_LOCK.try_lock().is_some() {
             if let Ok((addr, data)) = self.raw_rx.recv().await {
                 if !self.espnow.peer_exists(addr).unwrap() {
                     self.espnow
@@ -83,7 +76,7 @@ impl EspNowService {
             }
         }
     }
-    pub async fn reactor(&self) {
+    pub async fn run_handle(&self) {
         while let Ok((addr, data)) = self.raw_rx.recv().await {
             if !self.espnow.peer_exists(addr).unwrap() {
                 self.espnow

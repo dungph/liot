@@ -1,4 +1,10 @@
-use std::{cell::RefCell, collections::BTreeMap, rc::Rc, time::Duration};
+use std::{
+    cell::RefCell,
+    collections::{btree_map::Entry, BTreeMap},
+    mem::discriminant,
+    rc::Rc,
+    time::Duration,
+};
 
 use anyhow::Result;
 use embedded_svc::storage::RawStorage;
@@ -12,7 +18,6 @@ pub struct StorageService {
     default_nvs: EspDefaultNvsPartition,
     storage: Rc<RefCell<EspNvs<NvsDefault>>>,
     map: Rc<RefCell<BTreeMap<String, DataValue>>>,
-    notify: Rc<Event>,
 }
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone)]
@@ -20,6 +25,8 @@ pub struct DataValue {
     value: Value,
     writers: Vec<String>,
     readers: Vec<String>,
+    #[serde(skip)]
+    notify: Rc<Event>,
 }
 
 impl StorageService {
@@ -48,7 +55,6 @@ impl StorageService {
             default_nvs,
             storage,
             map: Rc::new(RefCell::new(map)),
-            notify: Rc::new(Event::new()),
         })
     }
     pub fn default_nvs(&self) -> EspDefaultNvsPartition {
@@ -64,29 +70,45 @@ impl StorageService {
         self.get(key)
     }
     pub fn get_all(&self, key: &str) -> DataValue {
-        self.map.borrow_mut().get(key).cloned().unwrap_or_default()
-    }
-
-    pub fn set(&self, key: &str, value: Value) {
         self.map
             .borrow_mut()
             .entry(String::from(key))
             .or_default()
-            .value = value;
-        self.notify.notify(usize::MAX);
+            .clone()
+    }
+
+    pub fn set_check(&self, key: &str, value: Value) {
+        let old_value = self.get(key);
+        if discriminant(&old_value) == discriminant(&value) {
+            self.set(key, value)
+        }
+    }
+
+    pub fn set(&self, key: &str, value: Value) {
+        let notify = self.set_unnotice(key, value);
+        notify.notify(usize::MAX);
+    }
+
+    pub fn set_unnotice(&self, key: &str, value: Value) -> Rc<Event> {
+        match self.map.borrow_mut().entry(String::from(key)) {
+            Entry::Vacant(e) => {
+                let dat = DataValue::default();
+                let notify = dat.notify.clone();
+                e.insert(dat);
+                notify
+            }
+            Entry::Occupied(mut v) => {
+                let notify = v.get_mut().notify.clone();
+                v.get_mut().value = value;
+                notify
+            }
+        }
     }
 
     pub async fn wait_new(&self, key: &str) -> Value {
-        let cur = self.get(key);
-        loop {
-            let new = self.get(key);
-            if new == cur {
-                self.notify.listen().await;
-            } else {
-                println!("{new}");
-                return new;
-            }
-        }
+        let notify = self.get_all(key).notify;
+        notify.listen().await;
+        self.get(key)
     }
     pub fn entry(&self, key: &str) -> StorageEntry {
         StorageEntry {
@@ -113,10 +135,10 @@ impl StorageEntry {
     pub async fn wait_new(&self) -> Value {
         self.storage.wait_new(&self.key).await
     }
-    pub fn get_value(&self) -> Value {
+    pub fn get(&self) -> Value {
         self.storage.get(&self.key)
     }
-    pub fn set_value(&self, value: Value) {
+    pub fn set(&self, value: Value) {
         self.storage.set(&self.key, value);
     }
     pub fn get_key(&self) -> &str {
@@ -124,5 +146,8 @@ impl StorageEntry {
     }
     pub fn get_or_init(&self, get_value: impl Fn() -> Value) -> Value {
         self.storage.get_or_init(&self.key, get_value)
+    }
+    pub fn set_unnotice(&self, value: Value) {
+        self.storage.set_unnotice(&self.key, value);
     }
 }

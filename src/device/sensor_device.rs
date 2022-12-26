@@ -1,54 +1,56 @@
-use std::time::Duration;
-
-use esp_idf_hal::{
-    gpio::{Input, InputPin, PinDriver},
-    peripheral::Peripheral,
+use crate::{
+    data_schema::{DataSchema, DetailDataSchema, Schema},
+    storage::{StorageEntry, StorageService},
 };
+use embedded_hal::digital::InputPin;
+use std::{cell::RefCell, collections::BTreeMap, rc::Rc, time::Duration};
 
-use super::Device;
-
-pub struct SensorDevice<'a, T: InputPin> {
-    device: PinDriver<'a, T, Input>,
+pub struct SensorDevice<T: InputPin> {
+    title_state: StorageEntry,
+    device: Rc<RefCell<T>>,
+    state: StorageEntry,
 }
 
-impl<'a, T: InputPin> SensorDevice<'a, T> {
-    pub fn new(pin: impl Peripheral<P = T> + 'a) -> Self {
-        let device = PinDriver::input(pin).unwrap();
-        Self { device }
-    }
-
-    fn bool_field_id(&self) -> String {
-        String::from("Trạng Thái")
-    }
-
-    fn get_state(&self) -> bool {
-        self.device.is_high()
-    }
-}
-#[async_trait::async_trait(?Send)]
-impl<'a, T: InputPin> Device for SensorDevice<'a, T> {
-    async fn wait_change(&self) {
-        let state = self.get_state();
-        while state == self.get_state() {
-            futures_timer::Delay::new(Duration::from_millis(20)).await;
-        }
-    }
-    fn get_data_schema(&self) -> crate::utils::Data {
-        Data {
-            id: self.bool_field_id(),
-            title: String::from("Trạng Thái"),
-            description: None,
-            value: DataValue::Bool {
-                value: self.device.is_high(),
-            },
-            read_only: false,
-            write_only: false,
-            unit: Some("K".to_string()),
-            one_of: Some(Vec::new()),
-            format: Some("Format".to_string()),
-            ..Default::default()
+impl<T: InputPin> SensorDevice<T> {
+    pub fn new(name: &str, device: T, storage: &StorageService) -> Self {
+        Self {
+            device: Rc::new(RefCell::new(device)),
+            title_state: storage.entry(&format!("{name}_title_state")),
+            state: storage.entry(&format!("{name}_state")),
         }
     }
 
-    fn set_data(&self, _value: &serde_json::Value) {}
+    async fn wait_new_state(&self) -> bool {
+        let state = self.device.borrow().is_high().unwrap();
+        while self.device.borrow().is_high().unwrap() == state {
+            futures_timer::Delay::new(Duration::from_millis(50)).await;
+        }
+        !state
+    }
+    pub async fn run_handle(&self) {
+        loop {
+            let state = self.wait_new_state().await;
+            self.state.set(serde_json::Value::Bool(state));
+        }
+    }
 }
+//impl<T: InputPin> Schema for SensorDevice<T> {
+//    fn get_schema(&self) -> DataSchema {
+//        let state = DataSchema {
+//            id: self.state.get_key().to_string(),
+//            title: self.title_state.get().as_str().map(String::from),
+//            detail: DetailDataSchema::Bool,
+//            ..Default::default()
+//        };
+//        let edit_title = DataSchema {
+//            id: self.title_state.get_key().to_string(),
+//            title: Some(String::from("Change state title")),
+//            detail: DetailDataSchema::String,
+//            ..Default::default()
+//        };
+//        let mut properties = BTreeMap::new();
+//        properties.insert(state.id.to_owned(), state);
+//        properties.insert(edit_title.id.to_owned(), edit_title);
+//        properties
+//    }
+//}

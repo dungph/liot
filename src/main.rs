@@ -9,10 +9,11 @@ pub mod wifi;
 
 use crate::utils::run_ex;
 use async_executor::LocalExecutor;
+use base58::ToBase58;
 use controller::Controller;
 use device::pwm_device::PWMDevice;
 use esp_idf_hal::peripherals::Peripherals;
-use espnow::EspNowService;
+use espnow::{get_mac, EspNowService};
 use std::time::Duration;
 
 pub fn run() -> anyhow::Result<()> {
@@ -24,28 +25,36 @@ pub fn run() -> anyhow::Result<()> {
     let espnow = EspNowService::new(&wifi)?;
 
     //let device = SensorDevice::new(p.pins.gpio9);
-    let device = PWMDevice::new(
-        "dev",
+    let module1 = PWMDevice::new(
+        "module-1",
         p.ledc.timer0,
         p.ledc.channel0,
         p.pins.gpio3,
         storage.clone(),
     );
+    let module2 = PWMDevice::new(
+        "module-2",
+        p.ledc.timer1,
+        p.ledc.channel1,
+        p.pins.gpio4,
+        storage.clone(),
+    );
     let controller = Controller::new(
-        "dev",
+        &get_mac().to_base58(),
         wifi.clone(),
         &storage,
-        device.clone(),
+        vec![Box::new(module2.clone()), Box::new(module1.clone())],
         espnow.clone(),
     );
 
     let ex = LocalExecutor::new();
-    ex.spawn(device.run_handle()).detach();
+    ex.spawn(wifi.run_handle()).detach();
+    ex.spawn(module1.run_handle()).detach();
+    ex.spawn(module2.run_handle()).detach();
     ex.spawn(http.run(&controller, &storage)).detach();
-    ex.spawn(espnow.reactor()).detach();
+    ex.spawn(espnow.run_handle()).detach();
     ex.spawn(storage.periodic_store(Duration::from_secs(5)))
         .detach();
-    //ex.spawn(wifi.connect("Nokia", "12346789")).detach();
     ex.spawn(controller.run_handle()).detach();
     run_ex(ex);
 }

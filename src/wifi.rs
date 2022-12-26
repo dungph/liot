@@ -1,37 +1,39 @@
 use crate::data_schema::{DataSchema, DetailDataSchema, Schema};
+use crate::espnow;
 use crate::storage::{StorageEntry, StorageService};
 use anyhow::Result;
+use base58::ToBase58;
 use embedded_svc::wifi::{
     AccessPointConfiguration, AuthMethod, ClientConfiguration, Configuration, Wifi,
 };
 use esp_idf_hal::modem::Modem;
 use esp_idf_svc::{eventloop::EspSystemEventLoop, wifi::EspWifi};
 use futures_lite::future::or;
-use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::{cell::RefCell, collections::BTreeMap, net::Ipv4Addr, rc::Rc, time::Duration};
-
-#[derive(Serialize, Deserialize, Debug, Default)]
-pub struct CredentialStore {
-    sta: BTreeMap<String, String>,
-}
 
 #[derive(Clone)]
 pub struct WifiService<'a> {
     wifi: Rc<RefCell<EspWifi<'a>>>,
     ssid_config: StorageEntry,
     password_config: StorageEntry,
-    connect_cfg: StorageEntry,
+    connect_config: StorageEntry,
     status_ip: StorageEntry,
 }
 
 impl<'a> WifiService<'a> {
     pub fn new(modem: Modem, storage: &StorageService) -> anyhow::Result<Self> {
         let wifi = EspWifi::new(modem, EspSystemEventLoop::take()?, None)?;
+        storage.get_or_init("wifi_config_ssid", || Value::String("example".to_string()));
+        storage.get_or_init("wifi_config_password", || {
+            Value::String("example".to_string())
+        });
+        storage.get_or_init("wifi_config_connect", || Value::Bool(false));
         let this = Self {
             wifi: Rc::new(RefCell::new(wifi)),
             ssid_config: storage.entry("wifi_config_ssid"),
             password_config: storage.entry("wifi_config_password"),
-            connect_cfg: storage.entry("wifi_config_connect"),
+            connect_config: storage.entry("wifi_config_connect"),
             status_ip: storage.entry("wifi_status_ip"),
         };
         this.enable_ap()?;
@@ -75,7 +77,9 @@ impl<'a> WifiService<'a> {
     }
     fn public_ap_conf() -> AccessPointConfiguration {
         AccessPointConfiguration {
-            ssid: "ESP32".into(),
+            ssid: format!("ESP32-{}", espnow::get_mac().to_base58())
+                .as_str()
+                .into(),
             ssid_hidden: false,
             auth_method: AuthMethod::None,
             max_connections: 5,
@@ -159,29 +163,26 @@ impl<'a> WifiService<'a> {
         esp_idf_sys::esp_interface_t_ESP_IF_WIFI_AP
     }
     pub async fn run_handle(&self) {
-        let ssid = RefCell::new(String::new());
-        let pwd = RefCell::new(String::new());
+        if let Some(true) = self.connect_config.get().as_bool() {
+            futures_timer::Delay::new(Duration::from_millis(500)).await;
+            self.connect(
+                self.ssid_config.get().as_str().unwrap(),
+                self.password_config.get().as_str().unwrap(),
+            )
+            .await
+            .unwrap();
+        }
         let future1 = async {
             loop {
-                if let Some(new_ssid) = self.ssid_config.wait_new().await.as_str() {
-                    *ssid.borrow_mut() = new_ssid.to_string()
-                }
-            }
-        };
-        let future2 = async {
-            loop {
-                if let Some(new_pwd) = self.password_config.wait_new().await.as_str() {
-                    *pwd.borrow_mut() = new_pwd.to_string()
-                }
-            }
-        };
-        let future3 = async {
-            loop {
-                println!("CONNECTING");
-                if let Some(new_cnn) = self.connect_cfg.wait_new().await.as_bool() {
-                    if new_cnn {
-                        self.connect(&ssid.borrow(), &pwd.borrow()).await.unwrap();
-                    }
+                if let Some(true) = self.connect_config.wait_new().await.as_bool() {
+                    self.connect(
+                        self.ssid_config.get().as_str().unwrap(),
+                        self.password_config.get().as_str().unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                } else {
+                    self.disconnect().ok();
                 }
             }
         };
@@ -189,16 +190,15 @@ impl<'a> WifiService<'a> {
             loop {
                 futures_timer::Delay::new(Duration::from_millis(5000)).await;
                 let ip = self.get_ip().unwrap_or(Ipv4Addr::new(0, 0, 0, 0));
-                let socket = std::net::SocketAddrV4::new(ip, 80);
                 self.status_ip
-                    .set_value(serde_json::Value::String(socket.to_string()));
+                    .set(serde_json::Value::String(ip.to_string()));
             }
         };
-        or(or(future1, future2), or(future3, future4)).await
+        or(future1, future4).await
     }
 }
 impl<'a> Schema for WifiService<'a> {
-    fn get_schema(&self) -> BTreeMap<String, DataSchema> {
+    fn get_schema(&self) -> DataSchema {
         let wifi = DataSchema {
             id: self.ssid_config.get_key().to_string(),
             title: Some(String::from("SSID")),
@@ -218,17 +218,21 @@ impl<'a> Schema for WifiService<'a> {
             ..Default::default()
         };
         let connect = DataSchema {
-            id: self.password_config.get_key().to_string(),
-            title: Some(String::from("Password")),
+            id: self.connect_config.get_key().to_string(),
+            title: Some(String::from("Connect")),
             detail: DetailDataSchema::Bool,
-            read_only: true,
             ..Default::default()
         };
         let mut map = BTreeMap::new();
         map.insert(self.ssid_config.get_key().to_string(), wifi);
         map.insert(self.password_config.get_key().to_string(), pwd);
-        map.insert(self.connect_cfg.get_key().to_string(), connect);
+        map.insert(self.connect_config.get_key().to_string(), connect);
         map.insert(self.status_ip.get_key().to_string(), connected);
-        map
+        DataSchema {
+            id: String::from("wifi"),
+            title: Some(String::from("Wifi configure")),
+            detail: DetailDataSchema::Object { properties: map },
+            ..Default::default()
+        }
     }
 }
